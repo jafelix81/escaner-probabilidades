@@ -4,11 +4,11 @@ import yfinance as yf
 from scipy.stats import t
 from concurrent.futures import ThreadPoolExecutor
 
-print("🌐 1. Cargando Universo Cuantitativo Optimizado...")
+print("🌐 1. Cargando Universo Cuantitativo Optimizado Personalizado...")
 
-# Universo de acciones saneado y libre de errores de red
+# TU LISTA EXACTA DE 346 ACTIVOS ACTUALIZADA
 universo_tickers = [
-   "AAPL", "NVDA", "AMD", "MSFT", "GOOGL", "AMZN", "META", "TSLA", "INTC", "QCOM", "AVGO", "NFLX", "CSCO", "AMAT", "MU",
+    "AAPL", "NVDA", "AMD", "MSFT", "GOOGL", "AMZN", "META", "TSLA", "INTC", "QCOM", "AVGO", "NFLX", "CSCO", "AMAT", "MU",
     "PANW", "SNPS", "CDNS", "PLTR", "PYPL", "SHOP", "NET", "DDOG", "CRWD", "OKTA", "ZS", "MDB", "TEAM", "WDAY",
     "NOW", "SNOW", "ZM", "DOCU", "ROKU", "TWLO", "PINS", "SNAP", "MTCH", "SPLK", "FIVN", "RING", "PD", "DT", "NEWR",
     "TSM", "ASML", "LRCX", "KLAC", "NXPI", "TXN", "ADI", "MCHP", "ON", "MRVL", "TER", "ENPH", "SEDG", "FSLR", "FLEX",
@@ -43,13 +43,18 @@ universo_tickers = [
 
 universo_tickers = list(sorted(set(universo_tickers)))
 print(f"📥 2. Descargando precios históricos para {len(universo_tickers)} activos seleccionados...")
-data_descarga = yf.download(universo_tickers, period="2y", auto_adjust=True, progress=False)
+
+# 🚨 CAMBIO DE BLINDAJE: Si una acción falla por bloqueo de base de datos o delisting, yfinance la ignora de forma segura
+data_descarga = yf.download(universo_tickers, period="2y", auto_adjust=True, progress=False, errors="ignore")
 
 def analizar_datos_ticker(ticker):
     try:
+        # Validación de seguridad: Comprobamos si el ticker realmente existe en la descarga
         if isinstance(data_descarga.columns, pd.MultiIndex):
+            if ticker not in data_descarga['Close'].columns: return None
             datos = data_descarga['Close'][ticker].dropna()
         else:
+            if ticker not in data_descarga.columns: return None
             datos = data_descarga['Close'].dropna()
             
         if datos.empty or len(datos) < 50: return None
@@ -57,18 +62,14 @@ def analizar_datos_ticker(ticker):
         precios = datos.values.flatten()
         retornos_log = np.log(precios[1:] / precios[:-1])
         
-        # 1. Ajuste de Colas Pesadas (Mandelbrot)
         df_t, loc_t, scale_t = t.fit(retornos_log)
         p_real = 1 - t.cdf(0, df_t, loc=loc_t, scale=scale_t)
         
-        # 2. Volatilidad Histórica Externa
         volatilidad_anual = retornos_log.std() * np.sqrt(252)
         if volatilidad_anual <= 0: volatilidad_anual = 0.35
         
         q_mercado = 0.50 
         b_cuota = (1 - q_mercado) / q_mercado + (volatilidad_anual * 4)
-        
-        # 3. Métrica de Valor Esperado (EV)
         ev = (p_real * b_cuota) - (1 - p_real)
         
         if ev > 0.0: 

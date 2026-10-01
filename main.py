@@ -6,14 +6,14 @@ from concurrent.futures import ThreadPoolExecutor
 
 print("🌐 1. Cargando Universo Cuantitativo Optimizado Personalizado...")
 
-# TU LISTA EXACTA DE 346 ACTIVOS ACTUALIZADA
+# Tu lista exacta de activos depurada
 universo_tickers = [
     "AAPL", "NVDA", "AMD", "MSFT", "GOOGL", "AMZN", "META", "TSLA", "INTC", "QCOM", "AVGO", "NFLX", "CSCO", "AMAT", "MU",
     "PANW", "SNPS", "CDNS", "PLTR", "PYPL", "SHOP", "NET", "DDOG", "CRWD", "OKTA", "ZS", "MDB", "TEAM", "WDAY",
-    "NOW", "SNOW", "ZM", "DOCU", "ROKU", "TWLO", "PINS", "SNAP", "MTCH", "SPLK", "FIVN", "RING", "PD", "DT", "NEWR",
+    "NOW", "SNOW", "ZM", "DOCU", "ROKU", "TWLO", "PINS", "SNAP", "MTCH", "FIVN", "RING", "PD", "DT",
     "TSM", "ASML", "LRCX", "KLAC", "NXPI", "TXN", "ADI", "MCHP", "ON", "MRVL", "TER", "ENPH", "SEDG", "FSLR", "FLEX",
     "COIN", "MARA", "RIOT", "SOFI", "AFRM", "UPST", "HOOD", "DKNG", "NU", "MELI", "SE", "V", "MA", "AXP",
-    "REGN", "BIIB", "GILD", "AMGN", "VRTX", "ILMN", "ALGN", "MRNA", "BNTX", "SGEN", "CRSP", "EDIT", "NTLA", "BEAM",
+    "REGN", "BIIB", "GILD", "AMGN", "VRTX", "ILMN", "ALGN", "MRNA", "BNTX", "CRSP", "EDIT", "NTLA", "BEAM",
     "SBUX", "MDLZ", "CHTR", "TMUS", "CMCSA", "EA", "TTWO", "ABNB", "BKNG", "EXPE", "TRIP", "PDD", "JD", "BABA", "BIDU",
     "NIO", "LI", "XPEV", "LCID", "RIVN", "QS", "PLUG", "RUN", "CHPT", "BLNK", "BE", "FCEL", "SPWR",
     "CAT", "DE", "HON", "GE", "MMM", "LMT", "BA", "NOC", "GD", "RTX", "UPS", "FDX", "CSX", "NSC", "UNP", "WM", "RSG",
@@ -28,28 +28,22 @@ universo_tickers = [
     "STNE", "PAYS", "FLYW", "LOT", "LPRO", "OPFI", "CACC", "OMF", "FCF",
     "GPRO", "FITB", "HBAN", "KEY", "RF", "CFG", "MTB", "ZION", "TFC", "AX", "CUBI", "HOMB", "OZK",
     "FNB", "ASB", "VLY", "UMBF", "BOKF", "EGBN", "WBS", "CATY",
-    "IWM", "QQQ",
-    "VEA", "VWO", "IEFA", "EEM", "VNQ", "GLD", "USO", "UNG",
+    "IWM", "QQQ", "VEA", "VWO", "IEFA", "EEM", "VNQ", "GLD", "USO", "UNG",
     "OIH", "XLE", "XLF", "XLK", "XLV", "XLY", "XLP", "XLI", "XLB", "XLU", "XLRE", "SMH", "SOXX", "XBI", "KRE", "JETS",
-    "ARKK", "ARKW", "ARKG", "ARKF", "ARKQ",
-    "BITO",
-    "RUM",
-    "DJT", "PSNY",
-    "MP",
-    "SMCI", "DELL", "ANET", "VRT", "LITE", "CLS", "MOD", "CRDO", "ALAB", "GLW", "CEG", "VST", "GEV", "ETN", "PWR",
-    "APP", "AXON", "RDDT", "DUOL", "CAVA", "TEM", "TMDX", "IREN", "RKLB", "ASTS", "HUT", "WULF", "CIFR", "ATI",
-    "XYZ", "HAPN"
+    "ARKK", "ARKW", "ARKG", "ARKF", "ARKQ", "BITO", "RUM", "DJT", "PSNY", "MP", "SMCI", "DELL", "ANET", "VRT", "LITE", 
+    "CLS", "MOD", "CRDO", "ALAB", "GLW", "CEG", "VST", "GEV", "ETN", "PWR", "APP", "AXON", "RDDT", "DUOL", "CAVA", 
+    "TEM", "TMDX", "IREN", "RKLB", "ASTS", "HUT", "WULF", "CIFR", "ATI", "XYZ", "HAPN"
 ]
 
 universo_tickers = list(sorted(set(universo_tickers)))
-print(f"📥 2. Descargando precios históricos para {len(universo_tickers)} activos seleccionados...")
+print(f"📥 2. Descargando precios históricos para {len(universo_tickers)} activos vigentes...")
 
-# 🚨 CAMBIO DE BLINDAJE: Si una acción falla por bloqueo de base de datos o delisting, yfinance la ignora de forma segura
-data_descarga = yf.download(universo_tickers, period="2y", auto_adjust=True, progress=False, errors="ignore")
+# Descarga limpia estándar sin el comando obsoleto errors="ignore"
+data_descarga = yf.download(universo_tickers, period="2y", auto_adjust=True, progress=False)
 
 def analizar_datos_ticker(ticker):
     try:
-        # Validación de seguridad: Comprobamos si el ticker realmente existe en la descarga
+        # Verificación interna nativa para saltar errores si una acción falla
         if isinstance(data_descarga.columns, pd.MultiIndex):
             if ticker not in data_descarga['Close'].columns: return None
             datos = data_descarga['Close'][ticker].dropna()

@@ -3,7 +3,7 @@ name: Escaner Automatico de Bolsa
 on:
   workflow_dispatch:
   schedule:
-    - cron: '30 19 * * 1-5'
+    - cron: '25 19 * * 1-5'
 
 jobs:
   run-scanner:

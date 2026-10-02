@@ -4,9 +4,11 @@ import yfinance as yf
 from scipy.stats import t
 from concurrent.futures import ThreadPoolExecutor
 import urllib.request
-import urllib.parse
 
 print("🌐 1. Cargando Universo Cuantitativo Optimizado Personalizado...")
+
+# 🚨 PEGA AQUÍ TU URL LARGA DE GOOGLE APPS SCRIPT DE ENTRE LAS COMILLAS:
+URL_RECEPTORA_GOOGLE = "https://script.google.com/macros/s/AKfycbyKFg59lbEzKboZqw5N09GCnMxFrIs4Xb_eq6HUjl87ib87pjvbm4I2T5FALvUdEKe3/exec"
 
 universo_tickers = [
     "AAPL", "NVDA", "AMD", "MSFT", "GOOGL", "AMZN", "META", "TSLA", "INTC", "QCOM", "AVGO", "NFLX", "CSCO", "AMAT", "MU",
@@ -74,17 +76,16 @@ with ThreadPoolExecutor(max_workers=40) as executor:
 
 texto_final = "\n".join(resultados)
 
-# 🚀 EXPORTACIÓN COMPORTAMIENTO NATIVO (SUBIR A DPASTE COMO TEXTO PLANO)
+# 🚀 EXPORTACIÓN DIRECTA Y ULTRA SEGURA A TU GOOGLE APPS SCRIPT
 try:
-    data_post = urllib.parse.urlencode({'content': texto_final, 'expiry_days': 1}).encode('utf-8')
-    req = urllib.request.Request("https://dpaste.org", data=data_post)
+    # Añadimos un User-Agent simulado de navegador para saltar cualquier restricción de red básica
+    req = urllib.request.Request(
+        URL_RECEPTORA_GOOGLE, 
+        data=texto_final.encode('utf-8'), 
+        headers={'User-Agent': 'Mozilla/5.0'}
+    )
     with urllib.request.urlopen(req) as response:
-        url_resultado = response.read().decode('utf-8').strip()
-    
-    # Imprimimos el enlace exacto con el sufijo /raw para que Google Sheets lo chupe sin formato HTML
-    url_raw = url_resultado + "/raw"
-    print("\n=======================================================")
-    print(f"ENLACE_AUTOMATICO_GENERADO: {url_raw}")
-    print("=======================================================")
+        reporte_final = response.read().decode('utf-8')
+    print(f"\n🎉 ¡ÉXITO TOTAL!: {reporte_final}")
 except Exception as e:
-    print(f"\n⚠️ Error al exportar: {e}")
+    print(f"\n⚠️ Error al exportar directamente a Google: {e}")

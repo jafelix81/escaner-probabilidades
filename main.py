@@ -32,6 +32,9 @@ from datetime import datetime, timezone
 #   - Máximo 2 reintentos individuales.
 #   - Registro de DATA_ATTEMPTS.
 #   - Registro de DATA_SOURCE.
+#   - Diagnóstico de tickers inactivos/delisted.
+#   - Registro de número de observaciones.
+#   - Registro de primera y última fecha disponible.
 #
 # FLUJO:
 #
@@ -44,6 +47,10 @@ from datetime import datetime, timezone
 # ¿Problema?
 #      ↓
 # Retry individual
+#      ↓
+# Diagnóstico
+#      ↓
+# OK / DELISTED / INACTIVE / INSUFFICIENT / ERROR
 #      ↓
 # Estado estadístico actual
 #      ↓
@@ -134,7 +141,10 @@ universo_tickers = [
 
 universo_tickers = sorted(set(universo_tickers))
 
-print(f"📊 Universo total configurado: {len(universo_tickers)} tickers")
+print(
+    f"📊 Universo total configurado: "
+    f"{len(universo_tickers)} tickers"
+)
 
 
 # ============================================================
@@ -151,6 +161,11 @@ MAX_REINTENTOS_INDIVIDUALES = 2
 # Pausa entre reintentos.
 ESPERA_RETRY_SEGUNDOS = 2
 
+# Mínimo de observaciones que consideraremos como
+# evidencia de que el ticker tiene algo de historial,
+# pero no suficiente para el modelo.
+MINIMO_HISTORIA_DETECTABLE = 20
+
 
 # ============================================================
 # 3. GENERAR RUN ID
@@ -164,8 +179,13 @@ timestamp_utc = ahora_utc.strftime(
     "%Y-%m-%dT%H:%M:%SZ"
 )
 
-print(f"🆔 RUN_ID: {run_id}")
-print(f"🕐 Timestamp UTC: {timestamp_utc}")
+print(
+    f"🆔 RUN_ID: {run_id}"
+)
+
+print(
+    f"🕐 Timestamp UTC: {timestamp_utc}"
+)
 
 
 # ============================================================
@@ -173,7 +193,11 @@ print(f"🕐 Timestamp UTC: {timestamp_utc}")
 # ============================================================
 
 print()
-print("📥 Descargando aproximadamente 10 años de historia diaria...")
+
+print(
+    "📥 Descargando aproximadamente 10 años "
+    "de historia diaria..."
+)
 
 inicio_descarga = time.time()
 
@@ -198,7 +222,10 @@ except Exception as e:
     raise
 
 
-tiempo_descarga = time.time() - inicio_descarga
+tiempo_descarga = (
+    time.time()
+    - inicio_descarga
+)
 
 print(
     f"✅ Descarga masiva terminada en "
@@ -214,15 +241,27 @@ def obtener_close_bulk(ticker):
 
     try:
 
-        if data_descarga is None or data_descarga.empty:
+        if (
+            data_descarga is None
+            or data_descarga.empty
+        ):
             return None
 
-        if isinstance(data_descarga.columns, pd.MultiIndex):
+        if isinstance(
+            data_descarga.columns,
+            pd.MultiIndex
+        ):
 
-            if "Close" not in data_descarga.columns.levels[0]:
+            if (
+                "Close"
+                not in data_descarga.columns.levels[0]
+            ):
                 return None
 
-            if ticker not in data_descarga["Close"].columns:
+            if (
+                ticker
+                not in data_descarga["Close"].columns
+            ):
                 return None
 
             serie = data_descarga["Close"][ticker]
@@ -250,12 +289,16 @@ def obtener_close_bulk(ticker):
 
 
 # ============================================================
-# 6. RETRY INDIVIDUAL
+# 6. RETRY INDIVIDUAL + DIAGNÓSTICO DE DATOS
 # ============================================================
 
 def obtener_close_individual(ticker):
 
     ultimo_error = ""
+
+    ultima_serie = None
+
+    ultimo_numero_observaciones = 0
 
     for intento in range(
         1,
@@ -281,13 +324,23 @@ def obtener_close_individual(ticker):
 
             if datos is None or datos.empty:
 
-                ultimo_error = "Yahoo devolvió datos vacíos."
+                ultimo_error = (
+                    "Yahoo devolvió datos vacíos."
+                )
 
             else:
 
-                if isinstance(datos.columns, pd.MultiIndex):
+                serie = None
 
-                    if "Close" not in datos.columns.levels[0]:
+                if isinstance(
+                    datos.columns,
+                    pd.MultiIndex
+                ):
+
+                    if (
+                        "Close"
+                        not in datos.columns.levels[0]
+                    ):
 
                         ultimo_error = (
                             "No se encontró columna Close."
@@ -297,25 +350,18 @@ def obtener_close_individual(ticker):
 
                         serie = datos["Close"]
 
-                        if isinstance(serie, pd.DataFrame):
+                        if isinstance(
+                            serie,
+                            pd.DataFrame
+                        ):
 
                             if ticker in serie.columns:
+
                                 serie = serie[ticker]
+
                             else:
+
                                 serie = serie.iloc[:, 0]
-
-                        serie = pd.to_numeric(
-                            serie,
-                            errors="coerce"
-                        ).dropna()
-
-                        if len(serie) >= MINIMO_DATOS:
-                            return serie
-
-                        ultimo_error = (
-                            f"Solo {len(serie)} "
-                            "observaciones válidas."
-                        )
 
                 else:
 
@@ -329,23 +375,46 @@ def obtener_close_individual(ticker):
 
                         serie = datos["Close"]
 
-                        serie = pd.to_numeric(
-                            serie,
-                            errors="coerce"
-                        ).dropna()
+                if serie is not None:
 
-                        if len(serie) >= MINIMO_DATOS:
-                            return serie
+                    serie = pd.to_numeric(
+                        serie,
+                        errors="coerce"
+                    ).dropna()
 
-                        ultimo_error = (
-                            f"Solo {len(serie)} "
-                            "observaciones válidas."
-                        )
+                    ultimo_numero_observaciones = (
+                        len(serie)
+                    )
+
+                    ultima_serie = serie
+
+                    if (
+                        len(serie)
+                        >= MINIMO_DATOS
+                    ):
+
+                        return {
+                            "serie": serie,
+                            "partial_serie": serie,
+                            "attempts": (
+                                MAX_REINTENTOS_INDIVIDUALES
+                                + 1
+                            ),
+                            "source": "INDIVIDUAL_RETRY",
+                            "error": "",
+                            "observaciones": len(serie)
+                        }
+
+                    ultimo_error = (
+                        f"Solo {len(serie)} "
+                        "observaciones válidas."
+                    )
 
         except Exception as e:
 
             ultimo_error = (
-                f"{type(e).__name__}: {str(e)}"
+                f"{type(e).__name__}: "
+                f"{str(e)}"
             )
 
         if intento < MAX_REINTENTOS_INDIVIDUALES:
@@ -354,7 +423,135 @@ def obtener_close_individual(ticker):
                 ESPERA_RETRY_SEGUNDOS
             )
 
-    return None
+    return {
+        "serie": None,
+        "partial_serie": ultima_serie,
+        "attempts": (
+            MAX_REINTENTOS_INDIVIDUALES + 1
+        ),
+        "source": "FAILED",
+        "error": ultimo_error,
+        "observaciones": ultimo_numero_observaciones
+    }
+
+
+# ============================================================
+# 6B. DIAGNÓSTICO DE TICKER INACTIVO / DELISTED
+# ============================================================
+
+def diagnosticar_ticker_inactivo(
+    ticker,
+    serie_parcial=None,
+    error_yahoo=""
+):
+
+    observaciones = 0
+
+    fecha_inicio = ""
+
+    fecha_fin = ""
+
+    if serie_parcial is not None:
+
+        try:
+
+            serie_parcial = pd.to_numeric(
+                serie_parcial,
+                errors="coerce"
+            ).dropna()
+
+            observaciones = len(
+                serie_parcial
+            )
+
+            if not serie_parcial.empty:
+
+                fecha_inicio = (
+                    serie_parcial.index.min()
+                    .strftime("%Y-%m-%d")
+                )
+
+                fecha_fin = (
+                    serie_parcial.index.max()
+                    .strftime("%Y-%m-%d")
+                )
+
+        except Exception:
+
+            pass
+
+    # --------------------------------------------------------
+    # Muy pocas observaciones:
+    # fuerte señal de símbolo inactivo/delisted.
+    # --------------------------------------------------------
+
+    if observaciones > 0:
+
+        if (
+            observaciones
+            < MINIMO_HISTORIA_DETECTABLE
+        ):
+
+            return {
+                "status": "DELISTED",
+
+                "diagnosis": (
+                    "Yahoo devolvió únicamente "
+                    f"{observaciones} observaciones. "
+                    "El símbolo parece inactivo, "
+                    "delistado o dejó de cotizar."
+                ),
+
+                "observaciones": observaciones,
+
+                "fecha_inicio": fecha_inicio,
+
+                "fecha_fin": fecha_fin
+            }
+
+    # --------------------------------------------------------
+    # Cero observaciones:
+    # no afirmamos automáticamente DELISTED.
+    # Puede ser un problema temporal de Yahoo.
+    # --------------------------------------------------------
+
+    if observaciones == 0:
+
+        return {
+            "status": "INACTIVE_OR_UNAVAILABLE",
+
+            "diagnosis": (
+                "Yahoo no devolvió historial válido "
+                "para el símbolo después de los "
+                "reintentos individuales."
+            ),
+
+            "observaciones": 0,
+
+            "fecha_inicio": "",
+
+            "fecha_fin": ""
+        }
+
+    # --------------------------------------------------------
+    # Existe historial, pero es insuficiente.
+    # --------------------------------------------------------
+
+    return {
+        "status": "INSUFFICIENT_DATA",
+
+        "diagnosis": (
+            f"Solo {observaciones} "
+            "observaciones válidas; "
+            f"se requieren {MINIMO_DATOS}."
+        ),
+
+        "observaciones": observaciones,
+
+        "fecha_inicio": fecha_inicio,
+
+        "fecha_fin": fecha_fin
+    }
 
 
 # ============================================================
@@ -367,43 +564,120 @@ def obtener_historia_robusta(ticker):
     # INTENTO 1: descarga masiva
     # --------------------------------------------------------
 
-    serie = obtener_close_bulk(ticker)
+    serie = obtener_close_bulk(
+        ticker
+    )
 
     if serie is not None:
 
         return {
             "serie": serie,
+
             "attempts": 1,
+
             "source": "BULK",
-            "error": ""
+
+            "status": "OK",
+
+            "error": "",
+
+            "diagnosis": "",
+
+            "observaciones": len(serie),
+
+            "fecha_inicio": (
+                serie.index.min()
+                .strftime("%Y-%m-%d")
+            ),
+
+            "fecha_fin": (
+                serie.index.max()
+                .strftime("%Y-%m-%d")
+            )
         }
 
     # --------------------------------------------------------
-    # Si la descarga masiva falló, hacemos retry individual.
+    # Si la descarga masiva falló,
+    # hacemos retry individual.
     # --------------------------------------------------------
 
-    serie = obtener_close_individual(ticker)
+    retry = obtener_close_individual(
+        ticker
+    )
 
-    if serie is not None:
+    if retry["serie"] is not None:
+
+        serie = retry["serie"]
 
         return {
             "serie": serie,
-            "attempts": MAX_REINTENTOS_INDIVIDUALES + 1,
-            "source": "INDIVIDUAL_RETRY",
-            "error": ""
+
+            "attempts": retry["attempts"],
+
+            "source": retry["source"],
+
+            "status": "OK",
+
+            "error": "",
+
+            "diagnosis": "",
+
+            "observaciones": len(serie),
+
+            "fecha_inicio": (
+                serie.index.min()
+                .strftime("%Y-%m-%d")
+            ),
+
+            "fecha_fin": (
+                serie.index.max()
+                .strftime("%Y-%m-%d")
+            )
         }
+
+    # --------------------------------------------------------
+    # No se recuperó.
+    # Diagnosticar la causa.
+    # --------------------------------------------------------
+
+    diagnostico = diagnosticar_ticker_inactivo(
+        ticker=ticker,
+
+        serie_parcial=retry.get(
+            "partial_serie",
+            None
+        ),
+
+        error_yahoo=retry.get(
+            "error",
+            ""
+        )
+    )
 
     return {
         "serie": None,
-        "attempts": MAX_REINTENTOS_INDIVIDUALES + 1,
-        "source": "FAILED",
-        "error": (
-            f"No fue posible obtener al menos "
-            f"{MINIMO_DATOS} observaciones válidas "
-            f"después de descarga masiva + "
-            f"{MAX_REINTENTOS_INDIVIDUALES} "
-            "reintentos individuales."
-        )
+
+        "attempts": retry["attempts"],
+
+        "source": retry["source"],
+
+        "status": diagnostico["status"],
+
+        "error": diagnostico["diagnosis"],
+
+        "diagnosis": diagnostico["diagnosis"],
+
+        "observaciones": diagnostico[
+            "observaciones"
+        ],
+
+        "fecha_inicio": diagnostico[
+            "fecha_inicio"
+        ],
+
+        "fecha_fin": diagnostico[
+            "fecha_fin"
+        ]
     }
 
 
@@ -411,42 +685,65 @@ def obtener_historia_robusta(ticker):
 # 8. FUNCIONES ESTADÍSTICAS
 # ============================================================
 
-def retorno_simple(precios, n):
+def retorno_simple(
+    precios,
+    n
+):
 
     if len(precios) <= n:
+
         return np.nan
 
-    anterior = precios[-n - 1]
+    anterior = precios[
+        -n - 1
+    ]
 
     actual = precios[-1]
 
     if anterior <= 0:
+
         return np.nan
 
-    return (actual / anterior) - 1.0
+    return (
+        actual / anterior
+    ) - 1.0
 
 
-def volatilidad_anualizada(retornos_log, ventana):
+def volatilidad_anualizada(
+    retornos_log,
+    ventana
+):
 
     if len(retornos_log) < ventana:
+
         return np.nan
 
-    ventana_ret = retornos_log[-ventana:]
+    ventana_ret = retornos_log[
+        -ventana:
+    ]
 
     if len(ventana_ret) < 2:
+
         return np.nan
 
-    vol = np.std(
-        ventana_ret,
-        ddof=1
-    ) * np.sqrt(252)
+    vol = (
+        np.std(
+            ventana_ret,
+            ddof=1
+        )
+        * np.sqrt(252)
+    )
 
     return float(vol)
 
 
-def skewness(retornos, ventana):
+def skewness(
+    retornos,
+    ventana
+):
 
     if len(retornos) < ventana:
+
         return np.nan
 
     serie = pd.Series(
@@ -458,9 +755,13 @@ def skewness(retornos, ventana):
     )
 
 
-def kurtosis_excess(retornos, ventana):
+def kurtosis_excess(
+    retornos,
+    ventana
+):
 
     if len(retornos) < ventana:
+
         return np.nan
 
     serie = pd.Series(
@@ -475,9 +776,13 @@ def kurtosis_excess(retornos, ventana):
     )
 
 
-def autocorrelacion_1(retornos, ventana=60):
+def autocorrelacion_1(
+    retornos,
+    ventana=60
+):
 
     if len(retornos) < ventana + 1:
+
         return np.nan
 
     serie = pd.Series(
@@ -525,16 +830,24 @@ def obtener_precio_actual(
                 pd.MultiIndex
             ):
 
-                if "Close" in intradia.columns.levels[0]:
+                if (
+                    "Close"
+                    in intradia.columns.levels[0]
+                ):
 
-                    serie = intradia["Close"]
+                    serie = intradia[
+                        "Close"
+                    ]
 
                     if isinstance(
                         serie,
                         pd.DataFrame
                     ):
 
-                        serie = serie.iloc[:, 0]
+                        serie = serie.iloc[
+                            :,
+                            0
+                        ]
 
                 else:
 
@@ -544,7 +857,9 @@ def obtener_precio_actual(
 
                 if "Close" in intradia.columns:
 
-                    serie = intradia["Close"]
+                    serie = intradia[
+                        "Close"
+                    ]
 
                 else:
 
@@ -585,7 +900,9 @@ def obtener_precio_actual(
 # 10. ANÁLISIS DE UN TICKER
 # ============================================================
 
-def analizar_ticker(ticker):
+def analizar_ticker(
+    ticker
+):
 
     resultado_base = {
 
@@ -597,7 +914,15 @@ def analizar_ticker(ticker):
 
         "DATA_ATTEMPTS": 0,
 
-        "DATA_SOURCE": ""
+        "DATA_SOURCE": "",
+
+        "DATA_OBSERVATIONS": 0,
+
+        "DATA_FIRST_DATE": "",
+
+        "DATA_LAST_DATE": "",
+
+        "DATA_DIAGNOSIS": ""
     }
 
     try:
@@ -610,25 +935,65 @@ def analizar_ticker(ticker):
             ticker
         )
 
-        precios_serie = historia["serie"]
+        precios_serie = historia[
+            "serie"
+        ]
 
         resultado_base[
             "DATA_ATTEMPTS"
-        ] = historia["attempts"]
+        ] = historia[
+            "attempts"
+        ]
 
         resultado_base[
             "DATA_SOURCE"
-        ] = historia["source"]
+        ] = historia[
+            "source"
+        ]
+
+        resultado_base[
+            "DATA_OBSERVATIONS"
+        ] = historia.get(
+            "observaciones",
+            0
+        )
+
+        resultado_base[
+            "DATA_FIRST_DATE"
+        ] = historia.get(
+            "fecha_inicio",
+            ""
+        )
+
+        resultado_base[
+            "DATA_LAST_DATE"
+        ] = historia.get(
+            "fecha_fin",
+            ""
+        )
+
+        resultado_base[
+            "DATA_DIAGNOSIS"
+        ] = historia.get(
+            "diagnosis",
+            ""
+        )
 
         if precios_serie is None:
 
             resultado_base[
                 "STATUS"
-            ] = "INSUFFICIENT_DATA"
+            ] = historia.get(
+                "status",
+                "ERROR"
+            )
 
             resultado_base[
                 "ERROR"
-            ] = historia["error"]
+            ] = historia.get(
+                "error",
+                ""
+            )
 
             return resultado_base
 
@@ -647,8 +1012,13 @@ def analizar_ticker(ticker):
             ] = (
                 f"Solo {len(precios)} "
                 f"observaciones válidas; "
-                f"se requieren {MINIMO_DATOS}."
+                f"se requieren "
+                f"{MINIMO_DATOS}."
             )
+
+            resultado_base[
+                "DATA_OBSERVATIONS"
+            ] = len(precios)
 
             return resultado_base
 
@@ -788,20 +1158,29 @@ def analizar_ticker(ticker):
         variables = [
 
             r1,
+
             r5,
+
             r20,
+
             r60,
+
             r120,
 
             vol5,
+
             vol20,
+
             vol60,
+
             vol252,
 
             vol_ratio20,
+
             vol_ratio60,
 
             skew20,
+
             kurt20,
 
             ac1
@@ -853,6 +1232,26 @@ def analizar_ticker(ticker):
             "DATA_SOURCE": historia[
                 "source"
             ],
+
+            "DATA_OBSERVATIONS": historia.get(
+                "observaciones",
+                len(precios)
+            ),
+
+            "DATA_FIRST_DATE": historia.get(
+                "fecha_inicio",
+                ""
+            ),
+
+            "DATA_LAST_DATE": historia.get(
+                "fecha_fin",
+                ""
+            ),
+
+            "DATA_DIAGNOSIS": historia.get(
+                "diagnosis",
+                ""
+            ),
 
             "Price_Actual": precio_actual,
 
@@ -957,6 +1356,7 @@ def analizar_ticker(ticker):
 # ============================================================
 
 print()
+
 print(
     "⚙️ Calculando estados estadísticos..."
 )
@@ -1014,7 +1414,15 @@ with ThreadPoolExecutor(
 
                 "DATA_ATTEMPTS": 0,
 
-                "DATA_SOURCE": "FAILED"
+                "DATA_SOURCE": "FAILED",
+
+                "DATA_OBSERVATIONS": 0,
+
+                "DATA_FIRST_DATE": "",
+
+                "DATA_LAST_DATE": "",
+
+                "DATA_DIAGNOSIS": ""
             })
 
 
@@ -1079,6 +1487,34 @@ total_ok = int(
     ).sum()
 )
 
+total_delisted = int(
+    (
+        df_resultados["STATUS"]
+        == "DELISTED"
+    ).sum()
+)
+
+total_inactive = int(
+    (
+        df_resultados["STATUS"]
+        == "INACTIVE_OR_UNAVAILABLE"
+    ).sum()
+)
+
+total_insufficient = int(
+    (
+        df_resultados["STATUS"]
+        == "INSUFFICIENT_DATA"
+    ).sum()
+)
+
+total_errors = int(
+    (
+        df_resultados["STATUS"]
+        == "ERROR"
+    ).sum()
+)
+
 total_error = (
     total_procesados
     - total_ok
@@ -1108,6 +1544,26 @@ print(
 print(
     f"Tickers con problema  : "
     f"{total_error}"
+)
+
+print(
+    f"  ├─ DELISTED         : "
+    f"{total_delisted}"
+)
+
+print(
+    f"  ├─ INACTIVE         : "
+    f"{total_inactive}"
+)
+
+print(
+    f"  ├─ INSUFFICIENT     : "
+    f"{total_insufficient}"
+)
+
+print(
+    f"  └─ ERROR            : "
+    f"{total_errors}"
 )
 
 
@@ -1144,78 +1600,173 @@ if total_ok < int(
 
 
 # ============================================================
-# 14. MOSTRAR TICKERS RECUPERADOS / PROBLEMÁTICOS
+# 14. RESULTADO DE RETRIES Y DIAGNÓSTICO
 # ============================================================
 
 print()
 print("=" * 70)
-print("🔄 RESULTADO DE RETRIES")
+print("🔄 RESULTADO DE RETRIES Y DIAGNÓSTICO")
 print("=" * 70)
 
-if (
-    "DATA_SOURCE" in df_resultados.columns
-):
+if "DATA_SOURCE" in df_resultados.columns:
+
+    # --------------------------------------------------------
+    # Tickers que necesitaron retry
+    # --------------------------------------------------------
+
+    retries = df_resultados[
+        df_resultados["DATA_ATTEMPTS"]
+        > 1
+    ]
+
+    # --------------------------------------------------------
+    # Recuperados
+    # --------------------------------------------------------
 
     recuperados = df_resultados[
         (
-            df_resultados[
-                "DATA_SOURCE"
-            ]
+            df_resultados["DATA_SOURCE"]
             == "INDIVIDUAL_RETRY"
         )
         &
         (
-            df_resultados[
-                "STATUS"
-            ]
+            df_resultados["STATUS"]
             == "OK"
         )
     ]
 
-    if not recuperados.empty:
+    # --------------------------------------------------------
+    # Delisted
+    # --------------------------------------------------------
 
-        print(
-            "Tickers recuperados "
-            "mediante retry individual:"
-        )
+    delisted = df_resultados[
+        df_resultados["STATUS"]
+        == "DELISTED"
+    ]
 
-        for ticker in recuperados[
-            "Ticker"
-        ]:
+    # --------------------------------------------------------
+    # Inactive / unavailable
+    # --------------------------------------------------------
 
-            print(
-                f"  ✅ {ticker}"
-            )
+    inactive = df_resultados[
+        df_resultados["STATUS"]
+        == "INACTIVE_OR_UNAVAILABLE"
+    ]
 
-    else:
+    # --------------------------------------------------------
+    # Insufficient
+    # --------------------------------------------------------
 
-        print(
-            "Ningún ticker necesitó "
-            "retry individual."
-        )
+    insufficient = df_resultados[
+        df_resultados["STATUS"]
+        == "INSUFFICIENT_DATA"
+    ]
 
+    # --------------------------------------------------------
+    # Error
+    # --------------------------------------------------------
 
-problematicos = df_resultados[
-    df_resultados[
-        "STATUS"
-    ] != "OK"
-]
+    errores = df_resultados[
+        df_resultados["STATUS"]
+        == "ERROR"
+    ]
 
-if not problematicos.empty:
-
-    print()
     print(
-        "⚠️ Tickers que continúan "
-        "con problemas:"
+        f"Tickers que necesitaron retry : "
+        f"{len(retries)}"
     )
 
-    for _, fila in problematicos.iterrows():
+    print(
+        f"Recuperados mediante retry    : "
+        f"{len(recuperados)}"
+    )
 
+    print(
+        f"DELISTED                      : "
+        f"{len(delisted)}"
+    )
+
+    print(
+        f"INACTIVE / UNAVAILABLE        : "
+        f"{len(inactive)}"
+    )
+
+    print(
+        f"INSUFFICIENT_DATA             : "
+        f"{len(insufficient)}"
+    )
+
+    print(
+        f"ERROR                         : "
+        f"{len(errores)}"
+    )
+
+    # --------------------------------------------------------
+    # Detalle de retries
+    # --------------------------------------------------------
+
+    if not retries.empty:
+
+        print()
         print(
-            f"  ❌ {fila['Ticker']} | "
-            f"{fila['STATUS']} | "
-            f"{fila.get('ERROR', '')}"
+            "📋 TICKERS QUE NECESITARON RETRY:"
         )
+
+        for _, fila in retries.iterrows():
+
+            print(
+                f"  • {fila['Ticker']} | "
+                f"{fila['STATUS']} | "
+                f"{fila['DATA_ATTEMPTS']} intentos | "
+                f"{fila.get('DATA_OBSERVATIONS', 0)} obs"
+            )
+
+    # --------------------------------------------------------
+    # Delisted
+    # --------------------------------------------------------
+
+    if not delisted.empty:
+
+        print()
+        print(
+            "⛔ TICKERS CLASIFICADOS COMO DELISTED:"
+        )
+
+        for _, fila in delisted.iterrows():
+
+            print(
+                f"  ❌ {fila['Ticker']} | "
+                f"{fila.get('DATA_OBSERVATIONS', 0)} obs | "
+                f"{fila.get('DATA_LAST_DATE', '')}"
+            )
+
+    # --------------------------------------------------------
+    # Otros problemas
+    # --------------------------------------------------------
+
+    otros_problemas = df_resultados[
+        ~df_resultados["STATUS"].isin(
+            [
+                "OK",
+                "DELISTED"
+            ]
+        )
+    ]
+
+    if not otros_problemas.empty:
+
+        print()
+        print(
+            "⚠️ OTROS TICKERS CON PROBLEMAS:"
+        )
+
+        for _, fila in otros_problemas.iterrows():
+
+            print(
+                f"  • {fila['Ticker']} | "
+                f"{fila['STATUS']} | "
+                f"{fila.get('ERROR', '')}"
+            )
 
 
 # ============================================================
@@ -1237,6 +1788,14 @@ columnas = [
     "DATA_ATTEMPTS",
 
     "DATA_SOURCE",
+
+    "DATA_OBSERVATIONS",
+
+    "DATA_FIRST_DATE",
+
+    "DATA_LAST_DATE",
+
+    "DATA_DIAGNOSIS",
 
     "Price_Actual",
 
@@ -1314,7 +1873,9 @@ columnas = [
 ]
 
 
+# ------------------------------------------------------------
 # Crear columnas faltantes
+# ------------------------------------------------------------
 
 for columna in columnas:
 
@@ -1359,6 +1920,7 @@ texto_csv = df_export.to_csv(
 # ============================================================
 
 print()
+
 print(
     "📤 Exportando CERE a Google Sheets..."
 )
@@ -1405,6 +1967,7 @@ try:
         )
 
     print()
+
     print(
         "🎉 GOOGLE SHEETS RESPONDIÓ:"
     )
@@ -1416,6 +1979,7 @@ try:
 except Exception as e:
 
     print()
+
     print(
         "❌ ERROR AL EXPORTAR "
         "A GOOGLE SHEETS:"
@@ -1434,28 +1998,58 @@ except Exception as e:
 # ============================================================
 
 print()
+
 print("=" * 70)
-print("✅ CERE v1.1 TERMINADO")
+
+print(
+    "✅ CERE v1.1 TERMINADO"
+)
+
 print("=" * 70)
 
 print(
-    f"RUN_ID          : {run_id}"
+    f"RUN_ID          : "
+    f"{run_id}"
 )
 
 print(
-    f"Universo        : {total_universo}"
+    f"Universo        : "
+    f"{total_universo}"
 )
 
 print(
-    f"Procesados      : {total_procesados}"
+    f"Procesados      : "
+    f"{total_procesados}"
 )
 
 print(
-    f"Estado OK       : {total_ok}"
+    f"Estado OK       : "
+    f"{total_ok}"
 )
 
 print(
-    f"Con problemas   : {total_error}"
+    f"Con problemas   : "
+    f"{total_error}"
+)
+
+print(
+    f"  DELISTED      : "
+    f"{total_delisted}"
+)
+
+print(
+    f"  INACTIVE      : "
+    f"{total_inactive}"
+)
+
+print(
+    f"  INSUFFICIENT  : "
+    f"{total_insufficient}"
+)
+
+print(
+    f"  ERROR         : "
+    f"{total_errors}"
 )
 
 print(

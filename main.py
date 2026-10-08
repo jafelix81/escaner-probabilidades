@@ -3,13 +3,12 @@ import pandas as pd
 import yfinance as yf
 from concurrent.futures import ThreadPoolExecutor, as_completed
 import urllib.request
-import json
 import time
 from datetime import datetime, timezone
 
 
 # ============================================================
-# CERE v1.0 — MOTOR DE DATOS
+# CERE v1.1 — MOTOR DE DATOS ROBUSTO
 # ============================================================
 #
 # OBJETIVO:
@@ -25,11 +24,26 @@ from datetime import datetime, timezone
 #
 # Eso llegará en CERE v2.
 #
+# MEJORA v1.1:
+#   - Descarga masiva inicial.
+#   - Validación individual.
+#   - Retry automático para cualquier ticker
+#     que presente problemas de datos.
+#   - Máximo 2 reintentos individuales.
+#   - Registro de DATA_ATTEMPTS.
+#   - Registro de DATA_SOURCE.
+#
 # FLUJO:
 #
 # Yahoo Finance
 #      ↓
-# GitHub
+# Descarga masiva
+#      ↓
+# Validación individual
+#      ↓
+# ¿Problema?
+#      ↓
+# Retry individual
 #      ↓
 # Estado estadístico actual
 #      ↓
@@ -43,7 +57,7 @@ from datetime import datetime, timezone
 
 
 print("=" * 70)
-print("🚀 CERE v1.0 — MOTOR DE DATOS")
+print("🚀 CERE v1.1 — MOTOR DE DATOS ROBUSTO")
 print("=" * 70)
 
 
@@ -52,12 +66,14 @@ print("=" * 70)
 # ============================================================
 
 URL_RECEPTORA_GOOGLE = (
-    "https://script.google.com/macros/s/AKfycbyKFg59lbEzKboZqw5N09GCnMxFrIs4Xb_eq6HUjl87ib87pjvbm4I2T5FALvUdEKe3/exec"
+    "https://script.google.com/macros/s/"
+    "AKfycbyKFg59lbEzKboZqw5N09GCnMxFrIs4Xb_eq6HUjl87ib87pjvbm4I2T5FALvUdEKe3/"
+    "exec"
 )
 
 
 # ------------------------------------------------------------
-# UNIVERSO ORIGINAL
+# UNIVERSO
 # ------------------------------------------------------------
 
 universo_tickers = [
@@ -129,6 +145,12 @@ PERIODO_HISTORICO = "10y"
 
 MINIMO_DATOS = 260
 
+# Número máximo de reintentos individuales.
+MAX_REINTENTOS_INDIVIDUALES = 2
+
+# Pausa entre reintentos.
+ESPERA_RETRY_SEGUNDOS = 2
+
 
 # ============================================================
 # 3. GENERAR RUN ID
@@ -147,7 +169,7 @@ print(f"🕐 Timestamp UTC: {timestamp_utc}")
 
 
 # ============================================================
-# 4. DESCARGA HISTÓRICA
+# 4. DESCARGA HISTÓRICA MASIVA
 # ============================================================
 
 print()
@@ -169,24 +191,31 @@ try:
 
 except Exception as e:
 
-    print(f"❌ ERROR CRÍTICO descargando Yahoo Finance: {e}")
+    print(
+        f"❌ ERROR CRÍTICO descargando Yahoo Finance: {e}"
+    )
+
     raise
 
 
 tiempo_descarga = time.time() - inicio_descarga
 
 print(
-    f"✅ Descarga terminada en {tiempo_descarga:.1f} segundos"
+    f"✅ Descarga masiva terminada en "
+    f"{tiempo_descarga:.1f} segundos"
 )
 
 
 # ============================================================
-# 5. OBTENER SERIE DE CIERRES
+# 5. OBTENER CLOSE DESDE DESCARGA MASIVA
 # ============================================================
 
-def obtener_close(ticker):
+def obtener_close_bulk(ticker):
 
     try:
+
+        if data_descarga is None or data_descarga.empty:
+            return None
 
         if isinstance(data_descarga.columns, pd.MultiIndex):
 
@@ -200,7 +229,7 @@ def obtener_close(ticker):
 
         else:
 
-            if ticker not in data_descarga.columns:
+            if "Close" not in data_descarga.columns:
                 return None
 
             serie = data_descarga["Close"]
@@ -216,11 +245,170 @@ def obtener_close(ticker):
         return serie
 
     except Exception:
+
         return None
 
 
 # ============================================================
-# 6. FUNCIONES ESTADÍSTICAS
+# 6. RETRY INDIVIDUAL
+# ============================================================
+
+def obtener_close_individual(ticker):
+
+    ultimo_error = ""
+
+    for intento in range(
+        1,
+        MAX_REINTENTOS_INDIVIDUALES + 1
+    ):
+
+        try:
+
+            print(
+                f"🔄 Retry individual "
+                f"{ticker} — intento "
+                f"{intento}/{MAX_REINTENTOS_INDIVIDUALES}"
+            )
+
+            datos = yf.download(
+                ticker,
+                period=PERIODO_HISTORICO,
+                interval="1d",
+                auto_adjust=True,
+                progress=False,
+                threads=False
+            )
+
+            if datos is None or datos.empty:
+
+                ultimo_error = "Yahoo devolvió datos vacíos."
+
+            else:
+
+                if isinstance(datos.columns, pd.MultiIndex):
+
+                    if "Close" not in datos.columns.levels[0]:
+
+                        ultimo_error = (
+                            "No se encontró columna Close."
+                        )
+
+                    else:
+
+                        serie = datos["Close"]
+
+                        if isinstance(serie, pd.DataFrame):
+
+                            if ticker in serie.columns:
+                                serie = serie[ticker]
+                            else:
+                                serie = serie.iloc[:, 0]
+
+                        serie = pd.to_numeric(
+                            serie,
+                            errors="coerce"
+                        ).dropna()
+
+                        if len(serie) >= MINIMO_DATOS:
+                            return serie
+
+                        ultimo_error = (
+                            f"Solo {len(serie)} "
+                            "observaciones válidas."
+                        )
+
+                else:
+
+                    if "Close" not in datos.columns:
+
+                        ultimo_error = (
+                            "No se encontró columna Close."
+                        )
+
+                    else:
+
+                        serie = datos["Close"]
+
+                        serie = pd.to_numeric(
+                            serie,
+                            errors="coerce"
+                        ).dropna()
+
+                        if len(serie) >= MINIMO_DATOS:
+                            return serie
+
+                        ultimo_error = (
+                            f"Solo {len(serie)} "
+                            "observaciones válidas."
+                        )
+
+        except Exception as e:
+
+            ultimo_error = (
+                f"{type(e).__name__}: {str(e)}"
+            )
+
+        if intento < MAX_REINTENTOS_INDIVIDUALES:
+
+            time.sleep(
+                ESPERA_RETRY_SEGUNDOS
+            )
+
+    return None
+
+
+# ============================================================
+# 7. OBTENER HISTORIA CON FALLBACK AUTOMÁTICO
+# ============================================================
+
+def obtener_historia_robusta(ticker):
+
+    # --------------------------------------------------------
+    # INTENTO 1: descarga masiva
+    # --------------------------------------------------------
+
+    serie = obtener_close_bulk(ticker)
+
+    if serie is not None:
+
+        return {
+            "serie": serie,
+            "attempts": 1,
+            "source": "BULK",
+            "error": ""
+        }
+
+    # --------------------------------------------------------
+    # Si la descarga masiva falló, hacemos retry individual.
+    # --------------------------------------------------------
+
+    serie = obtener_close_individual(ticker)
+
+    if serie is not None:
+
+        return {
+            "serie": serie,
+            "attempts": MAX_REINTENTOS_INDIVIDUALES + 1,
+            "source": "INDIVIDUAL_RETRY",
+            "error": ""
+        }
+
+    return {
+        "serie": None,
+        "attempts": MAX_REINTENTOS_INDIVIDUALES + 1,
+        "source": "FAILED",
+        "error": (
+            f"No fue posible obtener al menos "
+            f"{MINIMO_DATOS} observaciones válidas "
+            f"después de descarga masiva + "
+            f"{MAX_REINTENTOS_INDIVIDUALES} "
+            "reintentos individuales."
+        )
+    }
+
+
+# ============================================================
+# 8. FUNCIONES ESTADÍSTICAS
 # ============================================================
 
 def retorno_simple(precios, n):
@@ -229,6 +417,7 @@ def retorno_simple(precios, n):
         return np.nan
 
     anterior = precios[-n - 1]
+
     actual = precios[-1]
 
     if anterior <= 0:
@@ -279,7 +468,8 @@ def kurtosis_excess(retornos, ventana):
     )
 
     # Fisher=True:
-    # normal distribution ≈ 0
+    # distribución normal ≈ 0
+
     return float(
         serie.kurt()
     )
@@ -298,19 +488,24 @@ def autocorrelacion_1(retornos, ventana=60):
         lag=1
     )
 
-    return float(valor) if pd.notna(valor) else np.nan
+    return (
+        float(valor)
+        if pd.notna(valor)
+        else np.nan
+    )
 
 
 # ============================================================
-# 7. PRECIO INTRADÍA ACTUAL
+# 9. PRECIO INTRADÍA ACTUAL
 # ============================================================
 
-def obtener_precio_actual(ticker, precio_cierre):
+def obtener_precio_actual(
+    ticker,
+    precio_cierre
+):
 
     try:
 
-        # Intentamos obtener el último precio intradía disponible.
-        # Yahoo puede no devolverlo para algunos activos.
         intradia = yf.download(
             ticker,
             period="1d",
@@ -320,25 +515,39 @@ def obtener_precio_actual(ticker, precio_cierre):
             threads=False
         )
 
-        if intradia is not None and not intradia.empty:
+        if (
+            intradia is not None
+            and not intradia.empty
+        ):
 
-            if isinstance(intradia.columns, pd.MultiIndex):
+            if isinstance(
+                intradia.columns,
+                pd.MultiIndex
+            ):
 
                 if "Close" in intradia.columns.levels[0]:
 
                     serie = intradia["Close"]
 
-                    if isinstance(serie, pd.DataFrame):
+                    if isinstance(
+                        serie,
+                        pd.DataFrame
+                    ):
+
                         serie = serie.iloc[:, 0]
 
                 else:
+
                     serie = None
 
             else:
 
                 if "Close" in intradia.columns:
+
                     serie = intradia["Close"]
+
                 else:
+
                     serie = None
 
             if serie is not None:
@@ -354,51 +563,94 @@ def obtener_precio_actual(ticker, precio_cierre):
                         serie.iloc[-1]
                     )
 
-                    if np.isfinite(precio) and precio > 0:
+                    if (
+                        np.isfinite(precio)
+                        and precio > 0
+                    ):
+
                         return precio
 
     except Exception:
+
         pass
 
-    # Si Yahoo no entrega intradía,
-    # utilizamos el último cierre ajustado disponible.
-    return float(precio_cierre)
+    # Fallback al último cierre ajustado.
+
+    return float(
+        precio_cierre
+    )
 
 
 # ============================================================
-# 8. ANÁLISIS DE UN TICKER
+# 10. ANÁLISIS DE UN TICKER
 # ============================================================
 
 def analizar_ticker(ticker):
 
-    resultado = {
+    resultado_base = {
+
         "Ticker": ticker,
+
         "STATUS": "ERROR",
-        "ERROR": ""
+
+        "ERROR": "",
+
+        "DATA_ATTEMPTS": 0,
+
+        "DATA_SOURCE": ""
     }
 
     try:
 
-        precios_serie = obtener_close(ticker)
+        # ----------------------------------------------------
+        # HISTORIA ROBUSTA
+        # ----------------------------------------------------
+
+        historia = obtener_historia_robusta(
+            ticker
+        )
+
+        precios_serie = historia["serie"]
+
+        resultado_base[
+            "DATA_ATTEMPTS"
+        ] = historia["attempts"]
+
+        resultado_base[
+            "DATA_SOURCE"
+        ] = historia["source"]
 
         if precios_serie is None:
 
-            resultado["STATUS"] = "INSUFFICIENT_DATA"
-            resultado["ERROR"] = (
-                f"Menos de {MINIMO_DATOS} observaciones "
-                "diarias válidas."
-            )
+            resultado_base[
+                "STATUS"
+            ] = "INSUFFICIENT_DATA"
 
-            return resultado
+            resultado_base[
+                "ERROR"
+            ] = historia["error"]
+
+            return resultado_base
 
         precios = precios_serie.to_numpy(
             dtype=float
         )
 
         if len(precios) < MINIMO_DATOS:
-            resultado["STATUS"] = "INSUFFICIENT_DATA"
-            resultado["ERROR"] = "Historia insuficiente."
-            return resultado
+
+            resultado_base[
+                "STATUS"
+            ] = "INSUFFICIENT_DATA"
+
+            resultado_base[
+                "ERROR"
+            ] = (
+                f"Solo {len(precios)} "
+                f"observaciones válidas; "
+                f"se requieren {MINIMO_DATOS}."
+            )
+
+            return resultado_base
 
         # ----------------------------------------------------
         # RETORNOS LOG
@@ -412,11 +664,30 @@ def analizar_ticker(ticker):
         # RETORNOS SIMPLES
         # ----------------------------------------------------
 
-        r1 = retorno_simple(precios, 1)
-        r5 = retorno_simple(precios, 5)
-        r20 = retorno_simple(precios, 20)
-        r60 = retorno_simple(precios, 60)
-        r120 = retorno_simple(precios, 120)
+        r1 = retorno_simple(
+            precios,
+            1
+        )
+
+        r5 = retorno_simple(
+            precios,
+            5
+        )
+
+        r20 = retorno_simple(
+            precios,
+            20
+        )
+
+        r60 = retorno_simple(
+            precios,
+            60
+        )
+
+        r120 = retorno_simple(
+            precios,
+            120
+        )
 
         # ----------------------------------------------------
         # VOLATILIDAD
@@ -451,8 +722,13 @@ def analizar_ticker(ticker):
             and pd.notna(vol252)
             and vol252 > 0
         ):
-            vol_ratio20 = vol20 / vol252
+
+            vol_ratio20 = (
+                vol20 / vol252
+            )
+
         else:
+
             vol_ratio20 = np.nan
 
         if (
@@ -460,8 +736,13 @@ def analizar_ticker(ticker):
             and pd.notna(vol252)
             and vol252 > 0
         ):
-            vol_ratio60 = vol60 / vol252
+
+            vol_ratio60 = (
+                vol60 / vol252
+            )
+
         else:
+
             vol_ratio60 = np.nan
 
         # ----------------------------------------------------
@@ -505,38 +786,49 @@ def analizar_ticker(ticker):
         # ----------------------------------------------------
 
         variables = [
+
             r1,
             r5,
             r20,
             r60,
             r120,
+
             vol5,
             vol20,
             vol60,
             vol252,
+
             vol_ratio20,
             vol_ratio60,
+
             skew20,
             kurt20,
+
             ac1
         ]
 
         cantidad_validas = sum(
+
             pd.notna(x)
             and np.isfinite(x)
+
             for x in variables
         )
 
         if cantidad_validas < 12:
 
-            resultado["STATUS"] = "INSUFFICIENT_FEATURES"
+            resultado_base[
+                "STATUS"
+            ] = "INSUFFICIENT_FEATURES"
 
-            resultado["ERROR"] = (
+            resultado_base[
+                "ERROR"
+            ] = (
                 f"Solo {cantidad_validas}/14 "
                 "variables estadísticas válidas."
             )
 
-            return resultado
+            return resultado_base
 
         # ----------------------------------------------------
         # RESULTADO
@@ -553,6 +845,14 @@ def analizar_ticker(ticker):
             "STATUS": "OK",
 
             "ERROR": "",
+
+            "DATA_ATTEMPTS": historia[
+                "attempts"
+            ],
+
+            "DATA_SOURCE": historia[
+                "source"
+            ],
 
             "Price_Actual": precio_actual,
 
@@ -587,58 +887,79 @@ def analizar_ticker(ticker):
             "AC1": ac1,
 
             # ------------------------------------------------
-            # Estas columnas quedan reservadas para CERE v2.
+            # Reservado para CERE v2.
             # TODAVÍA NO SON CÁLCULOS DE EV.
             # ------------------------------------------------
 
             "Forward5": np.nan,
+
             "Forward10": np.nan,
+
             "Forward20": np.nan,
+
             "Forward40": np.nan,
 
             "EV5": np.nan,
+
             "EV10": np.nan,
+
             "EV20": np.nan,
+
             "EV40": np.nan,
 
             "Confidence5": np.nan,
+
             "Confidence10": np.nan,
+
             "Confidence20": np.nan,
+
             "Confidence40": np.nan,
 
             "ESS5": np.nan,
+
             "ESS10": np.nan,
+
             "ESS20": np.nan,
+
             "ESS40": np.nan,
 
             "ES95_5": np.nan,
+
             "ES95_10": np.nan,
+
             "ES95_20": np.nan,
+
             "ES95_40": np.nan,
 
             "Kelly25": np.nan
-
         }
 
         return resultado
 
     except Exception as e:
 
-        resultado["STATUS"] = "ERROR"
+        resultado_base[
+            "STATUS"
+        ] = "ERROR"
 
-        resultado["ERROR"] = (
-            f"{type(e).__name__}: {str(e)}"
+        resultado_base[
+            "ERROR"
+        ] = (
+            f"{type(e).__name__}: "
+            f"{str(e)}"
         )
 
-        return resultado
+        return resultado_base
 
 
 # ============================================================
-# 9. EJECUCIÓN PARA TODO EL UNIVERSO
+# 11. EJECUCIÓN PARA TODO EL UNIVERSO
 # ============================================================
 
 print()
-print("⚙️ Calculando estados estadísticos...")
+print(
+    "⚙️ Calculando estados estadísticos..."
+)
 
 inicio_calculo = time.time()
 
@@ -651,6 +972,7 @@ with ThreadPoolExecutor(
 ) as executor:
 
     futures = {
+
         executor.submit(
             analizar_ticker,
             ticker
@@ -659,29 +981,47 @@ with ThreadPoolExecutor(
         for ticker in universo_tickers
     }
 
-    for future in as_completed(futures):
+    for future in as_completed(
+        futures
+    ):
 
-        ticker = futures[future]
+        ticker = futures[
+            future
+        ]
 
         try:
 
             resultado = future.result()
 
             if resultado is not None:
-                resultados.append(resultado)
+
+                resultados.append(
+                    resultado
+                )
 
         except Exception as e:
 
             resultados.append({
+
                 "Ticker": ticker,
+
                 "STATUS": "ERROR",
+
                 "ERROR": (
-                    f"{type(e).__name__}: {str(e)}"
-                )
+                    f"{type(e).__name__}: "
+                    f"{str(e)}"
+                ),
+
+                "DATA_ATTEMPTS": 0,
+
+                "DATA_SOURCE": "FAILED"
             })
 
 
-tiempo_calculo = time.time() - inicio_calculo
+tiempo_calculo = (
+    time.time()
+    - inicio_calculo
+)
 
 print(
     f"✅ Cálculo terminado en "
@@ -690,7 +1030,7 @@ print(
 
 
 # ============================================================
-# 10. ORDENAR RESULTADOS
+# 12. ORDENAR RESULTADOS
 # ============================================================
 
 df_resultados = pd.DataFrame(
@@ -704,18 +1044,24 @@ if df_resultados.empty:
     )
 
 
-# Mantener orden alfabético
 if "Ticker" in df_resultados.columns:
 
     df_resultados = (
+
         df_resultados
-        .sort_values("Ticker")
-        .reset_index(drop=True)
+
+        .sort_values(
+            "Ticker"
+        )
+
+        .reset_index(
+            drop=True
+        )
     )
 
 
 # ============================================================
-# 11. VALIDACIÓN DE INTEGRIDAD
+# 13. VALIDACIÓN DE INTEGRIDAD
 # ============================================================
 
 total_universo = len(
@@ -727,10 +1073,16 @@ total_procesados = len(
 )
 
 total_ok = int(
-    (df_resultados["STATUS"] == "OK").sum()
+    (
+        df_resultados["STATUS"]
+        == "OK"
+    ).sum()
 )
 
-total_error = total_procesados - total_ok
+total_error = (
+    total_procesados
+    - total_ok
+)
 
 
 print()
@@ -739,19 +1091,23 @@ print("🔍 AUDITORÍA DE INTEGRIDAD")
 print("=" * 70)
 
 print(
-    f"Universo configurado : {total_universo}"
+    f"Universo configurado : "
+    f"{total_universo}"
 )
 
 print(
-    f"Tickers procesados   : {total_procesados}"
+    f"Tickers procesados   : "
+    f"{total_procesados}"
 )
 
 print(
-    f"Tickers OK            : {total_ok}"
+    f"Tickers OK            : "
+    f"{total_ok}"
 )
 
 print(
-    f"Tickers con problema  : {total_error}"
+    f"Tickers con problema  : "
+    f"{total_error}"
 )
 
 
@@ -764,9 +1120,12 @@ if total_procesados < int(
 ):
 
     raise RuntimeError(
-        "FALLO DE INTEGRIDAD: menos del 90% "
-        "del universo fue procesado. "
-        "NO se enviarán datos a Google Sheets."
+
+        "FALLO DE INTEGRIDAD: "
+        "menos del 90% del universo "
+        "fue procesado. "
+        "NO se enviarán datos a "
+        "Google Sheets."
     )
 
 
@@ -775,73 +1134,180 @@ if total_ok < int(
 ):
 
     raise RuntimeError(
-        "FALLO DE INTEGRIDAD: menos del 80% "
-        "de los tickers tienen estado OK. "
-        "NO se enviarán datos a Google Sheets."
+
+        "FALLO DE INTEGRIDAD: "
+        "menos del 80% de los tickers "
+        "tienen estado OK. "
+        "NO se enviarán datos a "
+        "Google Sheets."
     )
 
 
 # ============================================================
-# 12. CONSTRUIR CSV
+# 14. MOSTRAR TICKERS RECUPERADOS / PROBLEMÁTICOS
 # ============================================================
 
-# Orden explícito de columnas
+print()
+print("=" * 70)
+print("🔄 RESULTADO DE RETRIES")
+print("=" * 70)
+
+if (
+    "DATA_SOURCE" in df_resultados.columns
+):
+
+    recuperados = df_resultados[
+        (
+            df_resultados[
+                "DATA_SOURCE"
+            ]
+            == "INDIVIDUAL_RETRY"
+        )
+        &
+        (
+            df_resultados[
+                "STATUS"
+            ]
+            == "OK"
+        )
+    ]
+
+    if not recuperados.empty:
+
+        print(
+            "Tickers recuperados "
+            "mediante retry individual:"
+        )
+
+        for ticker in recuperados[
+            "Ticker"
+        ]:
+
+            print(
+                f"  ✅ {ticker}"
+            )
+
+    else:
+
+        print(
+            "Ningún ticker necesitó "
+            "retry individual."
+        )
+
+
+problematicos = df_resultados[
+    df_resultados[
+        "STATUS"
+    ] != "OK"
+]
+
+if not problematicos.empty:
+
+    print()
+    print(
+        "⚠️ Tickers que continúan "
+        "con problemas:"
+    )
+
+    for _, fila in problematicos.iterrows():
+
+        print(
+            f"  ❌ {fila['Ticker']} | "
+            f"{fila['STATUS']} | "
+            f"{fila.get('ERROR', '')}"
+        )
+
+
+# ============================================================
+# 15. CONSTRUIR CSV
+# ============================================================
 
 columnas = [
 
     "RUN_ID",
+
     "CAPTURED_AT_UTC",
 
     "Ticker",
 
     "STATUS",
+
     "ERROR",
 
+    "DATA_ATTEMPTS",
+
+    "DATA_SOURCE",
+
     "Price_Actual",
+
     "Price_Close",
 
     "R1",
+
     "R5",
+
     "R20",
+
     "R60",
+
     "R120",
 
     "Vol5",
+
     "Vol20",
+
     "Vol60",
+
     "Vol252",
 
     "VolRatio20",
+
     "VolRatio60",
 
     "Skew20",
+
     "Kurt20",
 
     "AC1",
 
     "Forward5",
+
     "Forward10",
+
     "Forward20",
+
     "Forward40",
 
     "EV5",
+
     "EV10",
+
     "EV20",
+
     "EV40",
 
     "Confidence5",
+
     "Confidence10",
+
     "Confidence20",
+
     "Confidence40",
 
     "ESS5",
+
     "ESS10",
+
     "ESS20",
+
     "ESS40",
 
     "ES95_5",
+
     "ES95_10",
+
     "ES95_20",
+
     "ES95_40",
 
     "Kelly25"
@@ -849,11 +1315,14 @@ columnas = [
 
 
 # Crear columnas faltantes
+
 for columna in columnas:
 
     if columna not in df_resultados.columns:
 
-        df_resultados[columna] = np.nan
+        df_resultados[
+            columna
+        ] = np.nan
 
 
 df_export = df_resultados[
@@ -878,21 +1347,26 @@ df_export = df_export.fillna("")
 # ------------------------------------------------------------
 
 texto_csv = df_export.to_csv(
+
     index=False,
+
     lineterminator="\n"
 )
 
 
 # ============================================================
-# 13. EXPORTAR A GOOGLE SHEETS
+# 16. EXPORTAR A GOOGLE SHEETS
 # ============================================================
 
 print()
-print("📤 Exportando CERE a Google Sheets...")
+print(
+    "📤 Exportando CERE a Google Sheets..."
+)
 
 try:
 
     request = urllib.request.Request(
+
         URL_RECEPTORA_GOOGLE,
 
         data=texto_csv.encode(
@@ -900,7 +1374,10 @@ try:
         ),
 
         headers={
-            "User-Agent": "CERE-GitHub/1.0",
+
+            "User-Agent":
+                "CERE-GitHub/1.1",
+
             "Content-Type":
                 "text/csv; charset=utf-8"
         },
@@ -909,41 +1386,56 @@ try:
     )
 
     with urllib.request.urlopen(
+
         request,
+
         timeout=60
+
     ) as response:
 
         respuesta = (
+
             response
+
             .read()
-            .decode("utf-8")
+
+            .decode(
+                "utf-8"
+            )
         )
 
     print()
-    print("🎉 GOOGLE SHEETS RESPONDIÓ:")
-    print(respuesta)
+    print(
+        "🎉 GOOGLE SHEETS RESPONDIÓ:"
+    )
+
+    print(
+        respuesta
+    )
 
 except Exception as e:
 
     print()
     print(
-        "❌ ERROR AL EXPORTAR A GOOGLE SHEETS:"
+        "❌ ERROR AL EXPORTAR "
+        "A GOOGLE SHEETS:"
     )
 
     print(
-        f"{type(e).__name__}: {str(e)}"
+        f"{type(e).__name__}: "
+        f"{str(e)}"
     )
 
     raise
 
 
 # ============================================================
-# 14. RESUMEN FINAL
+# 17. RESUMEN FINAL
 # ============================================================
 
 print()
 print("=" * 70)
-print("✅ CERE v1.0 TERMINADO")
+print("✅ CERE v1.1 TERMINADO")
 print("=" * 70)
 
 print(
@@ -967,7 +1459,8 @@ print(
 )
 
 print(
-    f"Tiempo cálculo  : {tiempo_calculo:.1f} s"
+    f"Tiempo cálculo  : "
+    f"{tiempo_calculo:.1f} s"
 )
 
 print(

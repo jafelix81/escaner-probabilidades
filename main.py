@@ -1,91 +1,978 @@
 import numpy as np
 import pandas as pd
 import yfinance as yf
-from scipy.stats import t
-from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import ThreadPoolExecutor, as_completed
 import urllib.request
+import json
+import time
+from datetime import datetime, timezone
 
-print("🌐 1. Cargando Universo Cuantitativo Optimizado Personalizado...")
 
-# 🚨 PEGA AQUÍ TU URL LARGA DE GOOGLE APPS SCRIPT DE ENTRE LAS COMILLAS:
-URL_RECEPTORA_GOOGLE = "https://script.google.com/macros/s/AKfycbyKFg59lbEzKboZqw5N09GCnMxFrIs4Xb_eq6HUjl87ib87pjvbm4I2T5FALvUdEKe3/exec"
+# ============================================================
+# CERE v1.0 — MOTOR DE DATOS
+# ============================================================
+#
+# OBJETIVO:
+#   Construir el estado estadístico actual de cada ticker.
+#
+# NO HACE TODAVÍA:
+#   - selección de compras
+#   - Kelly
+#   - bootstrap
+#   - vecinos históricos
+#   - Student-t condicional
+#   - EV
+#
+# Eso llegará en CERE v2.
+#
+# FLUJO:
+#
+# Yahoo Finance
+#      ↓
+# GitHub
+#      ↓
+# Estado estadístico actual
+#      ↓
+# Google Apps Script
+#      ↓
+# CERE_CURRENT
+# CERE_HISTORY
+# CERE_STATUS
+#
+# ============================================================
+
+
+print("=" * 70)
+print("🚀 CERE v1.0 — MOTOR DE DATOS")
+print("=" * 70)
+
+
+# ============================================================
+# 1. CONFIGURACIÓN
+# ============================================================
+
+URL_RECEPTORA_GOOGLE = (
+    "https://script.google.com/macros/s/"
+    "AKfycbyKF59lbEzKboZqw5N09GCnMxFrIs4Xb_eq6HUjl87ib87pjvbm4I2T5FALvUdEKe3/exec"
+)
+
+
+# ------------------------------------------------------------
+# UNIVERSO ORIGINAL
+# ------------------------------------------------------------
 
 universo_tickers = [
-    "AAPL", "NVDA", "AMD", "MSFT", "GOOGL", "AMZN", "META", "TSLA", "INTC", "QCOM", "AVGO", "NFLX", "CSCO", "AMAT", "MU",
-    "PANW", "SNPS", "CDNS", "PLTR", "PYPL", "SHOP", "NET", "DDOG", "CRWD", "OKTA", "ZS", "MDB", "TEAM", "WDAY",
-    "NOW", "SNOW", "ZM", "DOCU", "ROKU", "TWLO", "PINS", "SNAP", "MTCH", "TSM", "ASML", "LRCX", "KLAC", "NXPI", "TXN", 
-    "ADI", "MCHP", "ON", "MRVL", "TER", "ENPH", "SEDG", "FSLR", "FLEX", "COIN", "MARA", "RIOT", "SOFI", "AFRM", "UPST", 
-    "HOOD", "DKNG", "NU", "MELI", "SE", "V", "MA", "AXP", "REGN", "BIIB", "GILD", "AMGN", "VRTX", "ILMN", "ALGN", 
-    "MRNA", "BNTX", "CRSP", "EDIT", "NTLA", "BEAM", "SBUX", "MDLZ", "CHTR", "TMUS", "CMCSA", "EA", "TTWO", "ABNB", 
-    "BKNG", "EXPE", "TRIP", "PDD", "JD", "BABA", "BIDU", "NIO", "LI", "XPEV", "LCID", "RIVN", "QS", "PLUG", 
-    "RUN", "CHPT", "BLNK", "BE", "FCEL", "SPWR", "CAT", "DE", "HON", "GE", "MMM", "LMT", "BA", "NOC", 
-    "GD", "RTX", "UPS", "FDX", "CSX", "NSC", "UNP", "WM", "RSG", "JPM", "BAC", "WFC", "C", "GS", 
-    "MS", "BLK", "BX", "KKR", "APO", "TROW", "BEN", "STT", "NTRS", "SCHW", "AMTD", "WMT", "TGT", 
-    "COST", "HD", "LOW", "PG", "KO", "PEP", "EL", "CL", "KMB", "GIS", "MNST", "CELH", "XOM", 
-    "CVX", "COP", "EOG", "SLB", "HAL", "BKR", "OXY", "DVN", "APA", "FCX", "NEM", "NUE", 
-    "STLD", "AA", "CLF", "T", "VZ", "DIS", "WBD", "PARA", "FOXA", "NWSA", "LYV", "SIFY", 
-    "VOD", "TELFY", "LIN", "APD", "ECL", "SHW", "DD", "DOW", "MOS", "CF", "NTR", "FMC", 
-    "VMC", "MLM", "CX", "LEN", "DHI", "PHM", "PLD", "AMT", "CCI", "EQIX", "O", "SPG", 
-    "PSA", "EXR", "AVB", "EQR", "MAA", "VICI", "DLR", "SBAC", "WY", "BXP", "ISRG", "SYK", 
-    "ZBH", "EW", "BSX", "MDT", "ABT", "BMY", "PFE", "JNJ", "LLY", "NVO", "AZN", "SNY", 
-    "GSK", "TAK", "Z", "ZG", "OPEN", "COMP", "W", "CVNA", "CHWY", "JMIA", "EBAY", "ETSY", 
-    "WAY", "PAGS", "STNE", "PAYS", "FLYW", "LOT", "LPRO", "OPFI", "CACC", "OMF", "FCF", 
-    "GPRO", "FITB", "HBAN", "KEY", "RF", "CFG", "MTB", "ZION", "TFC", "AX", "CUBI", "HOMB", 
-    "OZK", "FNB", "ASB", "VLY", "UMBF", "BOKF", "EGBN", "WBS", "CATY", "IWM", "QQQ", 
-    "VEA", "VWO", "IEFA", "EEM", "VNQ", "GLD", "USO", "UNG", "OIH", "XLE", "XLF", "XLK", 
-    "XLV", "XLY", "XLP", "XLI", "XLB", "XLU", "XLRE", "SMH", "SOXX", "XBI", "KRE", "JETS", 
-    "ARKK", "ARKW", "ARKG", "ARKF", "ARKQ", "BITO", "RUM", "DJT", "PSNY", "MP", "SMCI", 
-    "DELL", "ANET", "VRT", "LITE", "CLS", "MOD", "CRDO", "ALAB", "GLW", "CEG", "VST", 
-    "GEV", "ETN", "PWR", "APP", "AXON", "RDDT", "DUOL", "CAVA", "TEM", "TMDX", "IREN", 
+    "AAPL", "NVDA", "AMD", "MSFT", "GOOGL", "AMZN", "META", "TSLA",
+    "INTC", "QCOM", "AVGO", "NFLX", "CSCO", "AMAT", "MU",
+    "PANW", "SNPS", "CDNS", "PLTR", "PYPL", "SHOP", "NET", "DDOG",
+    "CRWD", "OKTA", "ZS", "MDB", "TEAM", "WDAY",
+    "NOW", "SNOW", "ZM", "DOCU", "ROKU", "TWLO", "PINS", "SNAP",
+    "MTCH", "TSM", "ASML", "LRCX", "KLAC", "NXPI", "TXN",
+    "ADI", "MCHP", "ON", "MRVL", "TER", "ENPH", "SEDG", "FSLR",
+    "FLEX", "COIN", "MARA", "RIOT", "SOFI", "AFRM", "UPST",
+    "HOOD", "DKNG", "NU", "MELI", "SE", "V", "MA", "AXP", "REGN",
+    "BIIB", "GILD", "AMGN", "VRTX", "ILMN", "ALGN",
+    "MRNA", "BNTX", "CRSP", "EDIT", "NTLA", "BEAM", "SBUX", "MDLZ",
+    "CHTR", "TMUS", "CMCSA", "EA", "TTWO", "ABNB",
+    "BKNG", "EXPE", "TRIP", "PDD", "JD", "BABA", "BIDU", "NIO",
+    "LI", "XPEV", "LCID", "RIVN", "QS", "PLUG",
+    "RUN", "CHPT", "BLNK", "BE", "FCEL", "SPWR", "CAT", "DE", "HON",
+    "GE", "MMM", "LMT", "BA", "NOC",
+    "GD", "RTX", "UPS", "FDX", "CSX", "NSC", "UNP", "WM", "RSG",
+    "JPM", "BAC", "WFC", "C", "GS",
+    "MS", "BLK", "BX", "KKR", "APO", "TROW", "BEN", "STT", "NTRS",
+    "SCHW", "AMTD", "WMT", "TGT",
+    "COST", "HD", "LOW", "PG", "KO", "PEP", "EL", "CL", "KMB", "GIS",
+    "MNST", "CELH", "XOM",
+    "CVX", "COP", "EOG", "SLB", "HAL", "BKR", "OXY", "DVN", "APA",
+    "FCX", "NEM", "NUE",
+    "STLD", "AA", "CLF", "T", "VZ", "DIS", "WBD", "PARA", "FOXA",
+    "NWSA", "LYV", "SIFY",
+    "VOD", "TELFY", "LIN", "APD", "ECL", "SHW", "DD", "DOW", "MOS",
+    "CF", "NTR", "FMC",
+    "VMC", "MLM", "CX", "LEN", "DHI", "PHM", "PLD", "AMT", "CCI",
+    "EQIX", "O", "SPG",
+    "PSA", "EXR", "AVB", "EQR", "MAA", "VICI", "DLR", "SBAC", "WY",
+    "BXP", "ISRG", "SYK",
+    "ZBH", "EW", "BSX", "MDT", "ABT", "BMY", "PFE", "JNJ", "LLY",
+    "NVO", "AZN", "SNY",
+    "GSK", "TAK", "Z", "ZG", "OPEN", "COMP", "W", "CVNA", "CHWY",
+    "JMIA", "EBAY", "ETSY",
+    "WAY", "PAGS", "STNE", "PAYS", "FLYW", "LOT", "LPRO", "OPFI",
+    "CACC", "OMF", "FCF",
+    "GPRO", "FITB", "HBAN", "KEY", "RF", "CFG", "MTB", "ZION",
+    "TFC", "AX", "CUBI", "HOMB",
+    "OZK", "FNB", "ASB", "VLY", "UMBF", "BOKF", "EGBN", "WBS",
+    "CATY", "IWM", "QQQ",
+    "VEA", "VWO", "IEFA", "EEM", "VNQ", "GLD", "USO", "UNG", "OIH",
+    "XLE", "XLF", "XLK",
+    "XLV", "XLY", "XLP", "XLI", "XLB", "XLU", "XLRE", "SMH", "SOXX",
+    "XBI", "KRE", "JETS",
+    "ARKK", "ARKW", "ARKG", "ARKF", "ARKQ", "BITO", "RUM", "DJT",
+    "PSNY", "MP", "SMCI",
+    "DELL", "ANET", "VRT", "LITE", "CLS", "MOD", "CRDO", "ALAB",
+    "GLW", "CEG", "VST",
+    "GEV", "ETN", "PWR", "APP", "AXON", "RDDT", "DUOL", "CAVA",
+    "TEM", "TMDX", "IREN",
     "RKLB", "ASTS", "HUT", "WULF", "CIFR", "ATI", "XYZ", "HAPN"
 ]
 
-universo_tickers = list(sorted(set(universo_tickers)))
-print(f"📥 2. Descargando precios históricos para {len(universo_tickers)} activos vigentes...")
-data_descarga = yf.download(universo_tickers, period="2y", auto_adjust=True, progress=False)
+universo_tickers = sorted(set(universo_tickers))
 
-def analizar_datos_ticker(ticker):
-    try:
-        if isinstance(data_descarga.columns, pd.MultiIndex):
-            if ticker not in data_descarga['Close'].columns: return None
-            datos = data_descarga['Close'][ticker].dropna()
-        else:
-            if ticker not in data_descarga.columns: return None
-            datos = data_descarga['Close'].dropna()
-            
-        if datos.empty or len(datos) < 50: return None
-        precios = datos.values.flatten()
-        retornos_log = np.log(precios[1:] / precios[:-1])
-        df_t, loc_t, scale_t = t.fit(retornos_log)
-        p_real = 1 - t.cdf(0, df_t, loc=loc_t, scale=scale_t)
-        volatilidad_anual = retornos_log.std() * np.sqrt(252)
-        if volatilidad_anual <= 0: volatilidad_anual = 0.35
-        q_mercado = 0.50 
-        b_cuota = (1 - q_mercado) / q_mercado + (volatilidad_anual * 4)
-        ev = (p_real * b_cuota) - (1 - p_real)
-        
-        if ev > 0.0: 
-            return f"{ticker},{round(float(precios[-1]), 2)},{round(float(p_real), 2)},{round(float(b_cuota), 2)},{round(float(ev), 2)}"
-    except: return None
+print(f"📊 Universo total configurado: {len(universo_tickers)} tickers")
 
-resultados = ["Ticker,Precio_Actual,Probabilidad_Real_P,Cuota_Market_B,Valor_Esperado_EV"]
-print("⚙️ 3. Ejecutando escáner matemático paralelo...")
-with ThreadPoolExecutor(max_workers=40) as executor:
-    for res in executor.map(analizar_datos_ticker, universo_tickers):
-        if res is not None: resultados.append(res)
 
-texto_final = "\n".join(resultados)
+# ============================================================
+# 2. CONFIGURACIÓN DE HISTORIA
+# ============================================================
 
-# 🚀 EXPORTACIÓN DIRECTA Y ULTRA SEGURA A TU GOOGLE APPS SCRIPT
+PERIODO_HISTORICO = "10y"
+
+MINIMO_DATOS = 260
+
+
+# ============================================================
+# 3. GENERAR RUN ID
+# ============================================================
+
+ahora_utc = datetime.now(timezone.utc)
+
+run_id = ahora_utc.strftime("%Y%m%d_%H%M%S")
+
+timestamp_utc = ahora_utc.strftime(
+    "%Y-%m-%dT%H:%M:%SZ"
+)
+
+print(f"🆔 RUN_ID: {run_id}")
+print(f"🕐 Timestamp UTC: {timestamp_utc}")
+
+
+# ============================================================
+# 4. DESCARGA HISTÓRICA
+# ============================================================
+
+print()
+print("📥 Descargando aproximadamente 10 años de historia diaria...")
+
+inicio_descarga = time.time()
+
 try:
-    # Añadimos un User-Agent simulado de navegador para saltar cualquier restricción de red básica
-    req = urllib.request.Request(
-        URL_RECEPTORA_GOOGLE, 
-        data=texto_final.encode('utf-8'), 
-        headers={'User-Agent': 'Mozilla/5.0'}
+
+    data_descarga = yf.download(
+        universo_tickers,
+        period=PERIODO_HISTORICO,
+        interval="1d",
+        auto_adjust=True,
+        progress=False,
+        group_by="column",
+        threads=True
     )
-    with urllib.request.urlopen(req) as response:
-        reporte_final = response.read().decode('utf-8')
-    print(f"\n🎉 ¡ÉXITO TOTAL!: {reporte_final}")
+
 except Exception as e:
-    print(f"\n⚠️ Error al exportar directamente a Google: {e}")
+
+    print(f"❌ ERROR CRÍTICO descargando Yahoo Finance: {e}")
+    raise
+
+
+tiempo_descarga = time.time() - inicio_descarga
+
+print(
+    f"✅ Descarga terminada en {tiempo_descarga:.1f} segundos"
+)
+
+
+# ============================================================
+# 5. OBTENER SERIE DE CIERRES
+# ============================================================
+
+def obtener_close(ticker):
+
+    try:
+
+        if isinstance(data_descarga.columns, pd.MultiIndex):
+
+            if "Close" not in data_descarga.columns.levels[0]:
+                return None
+
+            if ticker not in data_descarga["Close"].columns:
+                return None
+
+            serie = data_descarga["Close"][ticker]
+
+        else:
+
+            if ticker not in data_descarga.columns:
+                return None
+
+            serie = data_descarga["Close"]
+
+        serie = pd.to_numeric(
+            serie,
+            errors="coerce"
+        ).dropna()
+
+        if len(serie) < MINIMO_DATOS:
+            return None
+
+        return serie
+
+    except Exception:
+        return None
+
+
+# ============================================================
+# 6. FUNCIONES ESTADÍSTICAS
+# ============================================================
+
+def retorno_simple(precios, n):
+
+    if len(precios) <= n:
+        return np.nan
+
+    anterior = precios[-n - 1]
+    actual = precios[-1]
+
+    if anterior <= 0:
+        return np.nan
+
+    return (actual / anterior) - 1.0
+
+
+def volatilidad_anualizada(retornos_log, ventana):
+
+    if len(retornos_log) < ventana:
+        return np.nan
+
+    ventana_ret = retornos_log[-ventana:]
+
+    if len(ventana_ret) < 2:
+        return np.nan
+
+    vol = np.std(
+        ventana_ret,
+        ddof=1
+    ) * np.sqrt(252)
+
+    return float(vol)
+
+
+def skewness(retornos, ventana):
+
+    if len(retornos) < ventana:
+        return np.nan
+
+    serie = pd.Series(
+        retornos[-ventana:]
+    )
+
+    return float(
+        serie.skew()
+    )
+
+
+def kurtosis_excess(retornos, ventana):
+
+    if len(retornos) < ventana:
+        return np.nan
+
+    serie = pd.Series(
+        retornos[-ventana:]
+    )
+
+    # Fisher=True:
+    # normal distribution ≈ 0
+    return float(
+        serie.kurt()
+    )
+
+
+def autocorrelacion_1(retornos, ventana=60):
+
+    if len(retornos) < ventana + 1:
+        return np.nan
+
+    serie = pd.Series(
+        retornos[-ventana:]
+    )
+
+    valor = serie.autocorr(
+        lag=1
+    )
+
+    return float(valor) if pd.notna(valor) else np.nan
+
+
+# ============================================================
+# 7. PRECIO INTRADÍA ACTUAL
+# ============================================================
+
+def obtener_precio_actual(ticker, precio_cierre):
+
+    try:
+
+        # Intentamos obtener el último precio intradía disponible.
+        # Yahoo puede no devolverlo para algunos activos.
+        intradia = yf.download(
+            ticker,
+            period="1d",
+            interval="1m",
+            auto_adjust=False,
+            progress=False,
+            threads=False
+        )
+
+        if intradia is not None and not intradia.empty:
+
+            if isinstance(intradia.columns, pd.MultiIndex):
+
+                if "Close" in intradia.columns.levels[0]:
+
+                    serie = intradia["Close"]
+
+                    if isinstance(serie, pd.DataFrame):
+                        serie = serie.iloc[:, 0]
+
+                else:
+                    serie = None
+
+            else:
+
+                if "Close" in intradia.columns:
+                    serie = intradia["Close"]
+                else:
+                    serie = None
+
+            if serie is not None:
+
+                serie = pd.to_numeric(
+                    serie,
+                    errors="coerce"
+                ).dropna()
+
+                if not serie.empty:
+
+                    precio = float(
+                        serie.iloc[-1]
+                    )
+
+                    if np.isfinite(precio) and precio > 0:
+                        return precio
+
+    except Exception:
+        pass
+
+    # Si Yahoo no entrega intradía,
+    # utilizamos el último cierre ajustado disponible.
+    return float(precio_cierre)
+
+
+# ============================================================
+# 8. ANÁLISIS DE UN TICKER
+# ============================================================
+
+def analizar_ticker(ticker):
+
+    resultado = {
+        "Ticker": ticker,
+        "STATUS": "ERROR",
+        "ERROR": ""
+    }
+
+    try:
+
+        precios_serie = obtener_close(ticker)
+
+        if precios_serie is None:
+
+            resultado["STATUS"] = "INSUFFICIENT_DATA"
+            resultado["ERROR"] = (
+                f"Menos de {MINIMO_DATOS} observaciones "
+                "diarias válidas."
+            )
+
+            return resultado
+
+        precios = precios_serie.to_numpy(
+            dtype=float
+        )
+
+        if len(precios) < MINIMO_DATOS:
+            resultado["STATUS"] = "INSUFFICIENT_DATA"
+            resultado["ERROR"] = "Historia insuficiente."
+            return resultado
+
+        # ----------------------------------------------------
+        # RETORNOS LOG
+        # ----------------------------------------------------
+
+        retornos_log = np.diff(
+            np.log(precios)
+        )
+
+        # ----------------------------------------------------
+        # RETORNOS SIMPLES
+        # ----------------------------------------------------
+
+        r1 = retorno_simple(precios, 1)
+        r5 = retorno_simple(precios, 5)
+        r20 = retorno_simple(precios, 20)
+        r60 = retorno_simple(precios, 60)
+        r120 = retorno_simple(precios, 120)
+
+        # ----------------------------------------------------
+        # VOLATILIDAD
+        # ----------------------------------------------------
+
+        vol5 = volatilidad_anualizada(
+            retornos_log,
+            5
+        )
+
+        vol20 = volatilidad_anualizada(
+            retornos_log,
+            20
+        )
+
+        vol60 = volatilidad_anualizada(
+            retornos_log,
+            60
+        )
+
+        vol252 = volatilidad_anualizada(
+            retornos_log,
+            252
+        )
+
+        # ----------------------------------------------------
+        # RATIOS DE VOLATILIDAD
+        # ----------------------------------------------------
+
+        if (
+            pd.notna(vol20)
+            and pd.notna(vol252)
+            and vol252 > 0
+        ):
+            vol_ratio20 = vol20 / vol252
+        else:
+            vol_ratio20 = np.nan
+
+        if (
+            pd.notna(vol60)
+            and pd.notna(vol252)
+            and vol252 > 0
+        ):
+            vol_ratio60 = vol60 / vol252
+        else:
+            vol_ratio60 = np.nan
+
+        # ----------------------------------------------------
+        # FORMA DE DISTRIBUCIÓN
+        # ----------------------------------------------------
+
+        skew20 = skewness(
+            retornos_log,
+            20
+        )
+
+        kurt20 = kurtosis_excess(
+            retornos_log,
+            20
+        )
+
+        # ----------------------------------------------------
+        # AUTOCORRELACIÓN
+        # ----------------------------------------------------
+
+        ac1 = autocorrelacion_1(
+            retornos_log,
+            60
+        )
+
+        # ----------------------------------------------------
+        # PRECIO DE REFERENCIA
+        # ----------------------------------------------------
+
+        precio_cierre = float(
+            precios[-1]
+        )
+
+        precio_actual = obtener_precio_actual(
+            ticker,
+            precio_cierre
+        )
+
+        # ----------------------------------------------------
+        # VALIDACIÓN
+        # ----------------------------------------------------
+
+        variables = [
+            r1,
+            r5,
+            r20,
+            r60,
+            r120,
+            vol5,
+            vol20,
+            vol60,
+            vol252,
+            vol_ratio20,
+            vol_ratio60,
+            skew20,
+            kurt20,
+            ac1
+        ]
+
+        cantidad_validas = sum(
+            pd.notna(x)
+            and np.isfinite(x)
+            for x in variables
+        )
+
+        if cantidad_validas < 12:
+
+            resultado["STATUS"] = "INSUFFICIENT_FEATURES"
+
+            resultado["ERROR"] = (
+                f"Solo {cantidad_validas}/14 "
+                "variables estadísticas válidas."
+            )
+
+            return resultado
+
+        # ----------------------------------------------------
+        # RESULTADO
+        # ----------------------------------------------------
+
+        resultado = {
+
+            "RUN_ID": run_id,
+
+            "CAPTURED_AT_UTC": timestamp_utc,
+
+            "Ticker": ticker,
+
+            "STATUS": "OK",
+
+            "ERROR": "",
+
+            "Price_Actual": precio_actual,
+
+            "Price_Close": precio_cierre,
+
+            "R1": r1,
+
+            "R5": r5,
+
+            "R20": r20,
+
+            "R60": r60,
+
+            "R120": r120,
+
+            "Vol5": vol5,
+
+            "Vol20": vol20,
+
+            "Vol60": vol60,
+
+            "Vol252": vol252,
+
+            "VolRatio20": vol_ratio20,
+
+            "VolRatio60": vol_ratio60,
+
+            "Skew20": skew20,
+
+            "Kurt20": kurt20,
+
+            "AC1": ac1,
+
+            # ------------------------------------------------
+            # Estas columnas quedan reservadas para CERE v2.
+            # TODAVÍA NO SON CÁLCULOS DE EV.
+            # ------------------------------------------------
+
+            "Forward5": np.nan,
+            "Forward10": np.nan,
+            "Forward20": np.nan,
+            "Forward40": np.nan,
+
+            "EV5": np.nan,
+            "EV10": np.nan,
+            "EV20": np.nan,
+            "EV40": np.nan,
+
+            "Confidence5": np.nan,
+            "Confidence10": np.nan,
+            "Confidence20": np.nan,
+            "Confidence40": np.nan,
+
+            "ESS5": np.nan,
+            "ESS10": np.nan,
+            "ESS20": np.nan,
+            "ESS40": np.nan,
+
+            "ES95_5": np.nan,
+            "ES95_10": np.nan,
+            "ES95_20": np.nan,
+            "ES95_40": np.nan,
+
+            "Kelly25": np.nan
+
+        }
+
+        return resultado
+
+    except Exception as e:
+
+        resultado["STATUS"] = "ERROR"
+
+        resultado["ERROR"] = (
+            f"{type(e).__name__}: {str(e)}"
+        )
+
+        return resultado
+
+
+# ============================================================
+# 9. EJECUCIÓN PARA TODO EL UNIVERSO
+# ============================================================
+
+print()
+print("⚙️ Calculando estados estadísticos...")
+
+inicio_calculo = time.time()
+
+resultados = []
+
+MAX_WORKERS = 12
+
+with ThreadPoolExecutor(
+    max_workers=MAX_WORKERS
+) as executor:
+
+    futures = {
+        executor.submit(
+            analizar_ticker,
+            ticker
+        ): ticker
+
+        for ticker in universo_tickers
+    }
+
+    for future in as_completed(futures):
+
+        ticker = futures[future]
+
+        try:
+
+            resultado = future.result()
+
+            if resultado is not None:
+                resultados.append(resultado)
+
+        except Exception as e:
+
+            resultados.append({
+                "Ticker": ticker,
+                "STATUS": "ERROR",
+                "ERROR": (
+                    f"{type(e).__name__}: {str(e)}"
+                )
+            })
+
+
+tiempo_calculo = time.time() - inicio_calculo
+
+print(
+    f"✅ Cálculo terminado en "
+    f"{tiempo_calculo:.1f} segundos"
+)
+
+
+# ============================================================
+# 10. ORDENAR RESULTADOS
+# ============================================================
+
+df_resultados = pd.DataFrame(
+    resultados
+)
+
+if df_resultados.empty:
+
+    raise RuntimeError(
+        "No se produjo ningún resultado."
+    )
+
+
+# Mantener orden alfabético
+if "Ticker" in df_resultados.columns:
+
+    df_resultados = (
+        df_resultados
+        .sort_values("Ticker")
+        .reset_index(drop=True)
+    )
+
+
+# ============================================================
+# 11. VALIDACIÓN DE INTEGRIDAD
+# ============================================================
+
+total_universo = len(
+    universo_tickers
+)
+
+total_procesados = len(
+    df_resultados
+)
+
+total_ok = int(
+    (df_resultados["STATUS"] == "OK").sum()
+)
+
+total_error = total_procesados - total_ok
+
+
+print()
+print("=" * 70)
+print("🔍 AUDITORÍA DE INTEGRIDAD")
+print("=" * 70)
+
+print(
+    f"Universo configurado : {total_universo}"
+)
+
+print(
+    f"Tickers procesados   : {total_procesados}"
+)
+
+print(
+    f"Tickers OK            : {total_ok}"
+)
+
+print(
+    f"Tickers con problema  : {total_error}"
+)
+
+
+# ------------------------------------------------------------
+# Regla de seguridad
+# ------------------------------------------------------------
+
+if total_procesados < int(
+    total_universo * 0.90
+):
+
+    raise RuntimeError(
+        "FALLO DE INTEGRIDAD: menos del 90% "
+        "del universo fue procesado. "
+        "NO se enviarán datos a Google Sheets."
+    )
+
+
+if total_ok < int(
+    total_universo * 0.80
+):
+
+    raise RuntimeError(
+        "FALLO DE INTEGRIDAD: menos del 80% "
+        "de los tickers tienen estado OK. "
+        "NO se enviarán datos a Google Sheets."
+    )
+
+
+# ============================================================
+# 12. CONSTRUIR CSV
+# ============================================================
+
+# Orden explícito de columnas
+
+columnas = [
+
+    "RUN_ID",
+    "CAPTURED_AT_UTC",
+
+    "Ticker",
+
+    "STATUS",
+    "ERROR",
+
+    "Price_Actual",
+    "Price_Close",
+
+    "R1",
+    "R5",
+    "R20",
+    "R60",
+    "R120",
+
+    "Vol5",
+    "Vol20",
+    "Vol60",
+    "Vol252",
+
+    "VolRatio20",
+    "VolRatio60",
+
+    "Skew20",
+    "Kurt20",
+
+    "AC1",
+
+    "Forward5",
+    "Forward10",
+    "Forward20",
+    "Forward40",
+
+    "EV5",
+    "EV10",
+    "EV20",
+    "EV40",
+
+    "Confidence5",
+    "Confidence10",
+    "Confidence20",
+    "Confidence40",
+
+    "ESS5",
+    "ESS10",
+    "ESS20",
+    "ESS40",
+
+    "ES95_5",
+    "ES95_10",
+    "ES95_20",
+    "ES95_40",
+
+    "Kelly25"
+]
+
+
+# Crear columnas faltantes
+for columna in columnas:
+
+    if columna not in df_resultados.columns:
+
+        df_resultados[columna] = np.nan
+
+
+df_export = df_resultados[
+    columnas
+].copy()
+
+
+# ------------------------------------------------------------
+# Limpieza de NaN / Inf
+# ------------------------------------------------------------
+
+df_export = df_export.replace(
+    [np.inf, -np.inf],
+    np.nan
+)
+
+df_export = df_export.fillna("")
+
+
+# ------------------------------------------------------------
+# CSV
+# ------------------------------------------------------------
+
+texto_csv = df_export.to_csv(
+    index=False,
+    lineterminator="\n"
+)
+
+
+# ============================================================
+# 13. EXPORTAR A GOOGLE SHEETS
+# ============================================================
+
+print()
+print("📤 Exportando CERE a Google Sheets...")
+
+try:
+
+    request = urllib.request.Request(
+        URL_RECEPTORA_GOOGLE,
+
+        data=texto_csv.encode(
+            "utf-8"
+        ),
+
+        headers={
+            "User-Agent": "CERE-GitHub/1.0",
+            "Content-Type":
+                "text/csv; charset=utf-8"
+        },
+
+        method="POST"
+    )
+
+    with urllib.request.urlopen(
+        request,
+        timeout=60
+    ) as response:
+
+        respuesta = (
+            response
+            .read()
+            .decode("utf-8")
+        )
+
+    print()
+    print("🎉 GOOGLE SHEETS RESPONDIÓ:")
+    print(respuesta)
+
+except Exception as e:
+
+    print()
+    print(
+        "❌ ERROR AL EXPORTAR A GOOGLE SHEETS:"
+    )
+
+    print(
+        f"{type(e).__name__}: {str(e)}"
+    )
+
+    raise
+
+
+# ============================================================
+# 14. RESUMEN FINAL
+# ============================================================
+
+print()
+print("=" * 70)
+print("✅ CERE v1.0 TERMINADO")
+print("=" * 70)
+
+print(
+    f"RUN_ID          : {run_id}"
+)
+
+print(
+    f"Universo        : {total_universo}"
+)
+
+print(
+    f"Procesados      : {total_procesados}"
+)
+
+print(
+    f"Estado OK       : {total_ok}"
+)
+
+print(
+    f"Con problemas   : {total_error}"
+)
+
+print(
+    f"Tiempo cálculo  : {tiempo_calculo:.1f} s"
+)
+
+print(
+    "Google Sheets   : EXPORTADO"
+)
+
+print("=" * 70)

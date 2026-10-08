@@ -52,8 +52,7 @@ print("=" * 70)
 # ============================================================
 
 URL_RECEPTORA_GOOGLE = (
-    "https://script.google.com/macros/s/"
-    "AKfycbyKF59lbEzKboZqw5N09GCnMxFrIs4Xb_eq6HUjl87ib87pjvbm4I2T5FALvUdEKe3/exec"
+    "https://script.google.com/macros/s/AKfycbyKFg59lbEzKboZqw5N09GCnMxFrIs4Xb_eq6HUjl87ib87pjvbm4I2T5FALvUdEKe3/exec"
 )
 
 
